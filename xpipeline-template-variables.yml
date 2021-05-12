@@ -8,7 +8,9 @@ variables:
   - name: XConfigMaster.Major
     value: 2
   - name: XConfigMaster.Minor
-    value: 1
+    value: 2
+  - name: XConfigMaster.Prerelease
+    value: ''
           
           
     

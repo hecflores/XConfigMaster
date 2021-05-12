@@ -338,6 +338,43 @@ function Write-Color() {
     $host.UI.RawUI.ForegroundColor = $startColor;
 }
 Export-ModuleMember -Function Write-Color
+function Expand-AsHtml() {
+    Param (
+        [string] $text = $(Write-Error "You must specify some text"),
+        [switch] $NoNewLine = $false
+    )
+	
+    
+	# $regex = ([regex]'(.+?)(?:\{(red|cyan|green|blue|magenta)\}|$)(.*)')
+	# while(-not ([String]::IsNullOrEmpty($text))){
+		# $before = $regex.Replace($text,'$1')
+		# $color  = $regex.Replace($text,'$2')
+		# $after  = $regex.Replace($text,'$3')
+		 # if ($_ -in [enum]::GetNames("ConsoleColor")) {
+			# $host.UI.RawUI.ForegroundColor = ($_ -as [System.ConsoleColor]);
+		# }
+	# }
+	$final = "<div><span style='color:black'>"
+    $text.Split( [char]"{", [char]"}" ) | ForEach-Object { $i = 0; } {
+        if ($i % 2 -eq 0) {
+			$final += $_
+        } else {
+            if ($_ -in [enum]::GetNames("ConsoleColor")) {
+				$final += "<span style='color:$($_)'>"
+            }
+			else{
+				$final += $_
+				$final += "</span>"
+				 
+			}
+        }
+
+        $i++;
+    }
+	$final += "</span></div>"
+    return $final
+}
+Export-ModuleMember -Function Expand-AsHtml
 class Helper{
 
 	static [System.Xml.XmlElement] CloneWithParents([System.Xml.XmlElement[]] $elements){
@@ -723,9 +760,13 @@ class HasContext{
 					Param( [System.Text.RegularExpressions.Match] $match)
 					
 					$name = $match.Groups[1].Value
+
+					# If we have more variables to resolve inside, then contain them inside of a classic $() to capture the entire expression in the string
 					if($regex.Match($name).Success){
 						return '$(' + $($regex.Replace($name, $replaceBlock2)) + ')'
 					}
+
+					# If we have it, then return it
 					if($variables[$name]){
 						if($inPlanTxt){
 							return $variables[$name]
@@ -741,9 +782,6 @@ class HasContext{
 					
 					$this.PushIndent()
 					$value = $parameter.Value()
-					foreach($transform in $valueTransforms){
-						$value = .$transform $value
-					}
 					$this.PopIndent()
 					
 					if($value -match ('([`'+$variablePrefix+'][(])(' + $name + ')([)])')){
@@ -774,6 +812,8 @@ class HasContext{
 					Param( [System.Text.RegularExpressions.Match] $match)
 
 					$name = $match.Groups[1].Value
+
+					# If the variable name is an expression. We need to resolve the execution of the expression, not the content
 					if($name -match '^\@Expression\=(.*)$'){
 						if($inPlanTxt){
 							return $regex.Replace($Matches[1], $replaceBlock2)
@@ -782,6 +822,7 @@ class HasContext{
 						return Invoke-Expression ($regex.Replace($Matches[1], $replaceBlock2))
 					}
 
+					# If the name of the variable has also variables in it
 					if($regex.Match($name).Success){
 						if($inPlanTxt){
 							return $regex.Replace($name, $replaceBlock)
@@ -789,6 +830,7 @@ class HasContext{
 						return $($regex.Replace($name, $replaceBlock))
 					}	 
 					
+					# If we have already resolve this value, send it
 					if($variables[$name]){
 						if($inPlanTxt){
 							return $variables[$name]
@@ -796,19 +838,23 @@ class HasContext{
 						return $variables[$name]
 					}
 					
+					# Find resolving variable
 					$parameter = $currentScope.Parameters().Get($name, $deepSearch)
 					
+					# Not found. 
 					if(-not $parameter){
 						$this.Error("Parameter {magenta}$($name){gray} came back with null when trying to parameterize '{magenta}$($value){value}'")
 						return "`$(`$variables['$($name)'])"
 					}
 					
+					# Resolve value of parameter. THis is the recursive side of things
 					$this.PushIndent()
 					$value = $parameter.Value()
-					foreach($transform in $valueTransforms){
-						$value = .$transform $value
-					}
 					$this.PopIndent()
+
+					# If the value of the variable is referencing its self...
+					# Meaning, $(VariableName) == "Some Text $(VariableName)"
+					# This will need to reresolve but from the parent scope if its available
 					if($value -match ('([`'+$variablePrefix+'][(])(' + $name + ')([)])')){
 						if(-not  $parameter.CurrentScope().ParentScope()){
 							$this.Error("Found recursive parameter setting '$($foundParameter.ParameterName())' and there is no parent scope to grab from to resolve the recursion")
@@ -822,13 +868,14 @@ class HasContext{
 						}
 					}
 					
+					# Value not found, send back $(name)
 					if(-not $value){
 						return "`$($($name))"
 					}
-					else{
-						$variables[$name] = $value
-						#$this.Display("Adding Variables[{magenta}$($name){gray}] = {magenta}$($value.GetType()){gray}/{magenta}$($value){gray}")
-					}
+
+					# Save it for later use
+					$variables[$name] = $value
+					
 					
 					if($inPlanTxt){
 						return $variables[$name]
@@ -1324,16 +1371,23 @@ class HasContext{
 		}
 		$this.RefreshSessionIfNeeded()
 		$this.Context().PushLocation($this._generatedFromFile)
+
 		if($this._xmlDefinitions.Count -gt 0){
+
 			# $this.Display("Loading Children [{white}$($this._xmlDefinitions.Count){gray} xmls to load]")
+			$this.PushIndent()
+			foreach($xmlDefinition in $this._xmlDefinitions){
+				# this.Display("Loading XML`r`n$($xmlDefinition.Xml.Outerxml | Format-Xml)`r`n")
+				$this.Context().PushLocation($xmlDefinition.Location)
+				$this.Context().PopulateFromXml($xmlDefinition.Xml, $this)
+				$this.Context().PopLocation()
+			}
+			# $this.Display("{darkgreen}[{green}Done{darkgreen}]{gray}")
+			$this._xmlDefinitions.Clear()
+			$this.PopIndent()
 		}
-		foreach($xmlDefinition in $this._xmlDefinitions){
-			# this.Display("Loading XML`r`n$($xmlDefinition.Xml.Outerxml | Format-Xml)`r`n")
-			$this.Context().PushLocation($xmlDefinition.Location)
-			$this.Context().PopulateFromXml($xmlDefinition.Xml, $this)
-			$this.Context().PopLocation()
-		}
-		$this._xmlDefinitions.Clear()
+		
+		
 		
 		if(-not [Object]::ReferenceEquals($this, $this.CurrentScope())){
 			$this.CurrentScope().LoadChildren()
@@ -1342,12 +1396,21 @@ class HasContext{
 			$this.CurrentScope().ParentScope().LoadChildren()
 		}
 		
-		foreach($xmlDefinition in $this._xmlDefinitions){
-			$this.Context().PushLocation($xmlDefinition.Location)
-			$this.Context().PopulateFromXml($xmlDefinition.Xml, $this)
-			$this.Context().PopLocation()
+		if($this._xmlDefinitions.Count -gt 0){
+
+			# $this.Display("Loading Children [{white}$($this._xmlDefinitions.Count){gray} xmls to load]")
+			$this.PushIndent()
+			foreach($xmlDefinition in $this._xmlDefinitions){
+				# this.Display("Loading XML`r`n$($xmlDefinition.Xml.Outerxml | Format-Xml)`r`n")
+				$this.Context().PushLocation($xmlDefinition.Location)
+				$this.Context().PopulateFromXml($xmlDefinition.Xml, $this)
+				$this.Context().PopLocation()
+			}
+			# $this.Display("{darkgreen}[{green}Done{darkgreen}]{gray}")
+			$this._xmlDefinitions.Clear()
+			$this.PopIndent()
 		}
-		$this._xmlDefinitions.Clear()
+		
 		$this.Context().PopLocation()
 		Exit-Block "LoadChildren"
 		
@@ -1510,14 +1573,17 @@ class HasCollectionContext: HasConsumableContext{
 	
     HasCollectionContext([ConfigAutomationContext] $_context):base($_context){
 		$this._items = new-object hashtable
+		$this._shallowItems = new-object hashtable
 		
     }
 	HasCollectionContext([ConfigAutomationContext] $_context, [UIInputScopeBase] $scope, [String] $name):base($_context, $scope, $name){
 		$this._items = new-object hashtable
+		$this._shallowItems = new-object hashtable
 		$this._referenceName = $name
     }
     HasCollectionContext([ConfigAutomationContext] $_context, [UIInputScopeBase] $scope, [String] $name, [string] $referenceName):base($_context, $scope, $name){
 		$this._items = new-object hashtable
+		$this._shallowItems = new-object hashtable
 		$this._referenceName = $name
     }
 	[bool] Hierarchical(){
@@ -1533,6 +1599,7 @@ class HasCollectionContext: HasConsumableContext{
 		$this._overridesEnabled = $overridesEnabled
 	}
 	[hashtable] $_items
+	[hashtable] $_shallowItems
 
 	[string] ReferenceName(){
 		return $this._referenceName
@@ -1553,6 +1620,8 @@ class HasCollectionContext: HasConsumableContext{
 		foreach($item in $this.Items()){
 			$isValid = $item.RefreshSession() -and $isValid
 		}
+
+		$this._shallowItems = new-object hashtable
 		return $isValid
 	}
     [System.Collections.ArrayList] Items(){
@@ -1596,6 +1665,7 @@ class HasCollectionContext: HasConsumableContext{
 	
 	[HasContext] InnerGet([string]$name, [bool] $IncludeParent , [bool] $isOverride, [bool] $ignoreOverride, [bool] $ignoreCurrentScopeCheck, [bool] $includeInvalidItems, [bool] $includeHiddenItems){
 		$action = {
+			$this.RefreshSessionIfNeeded()
 			
 			if(-not $this.Hierarchical()){
 				$foundItem = $this._items[$name.ToLower()]
@@ -1632,6 +1702,20 @@ class HasCollectionContext: HasConsumableContext{
 				}
 			}
 			
+			if(-not $foundItem){
+				$foundItem = $this._shallowItems[$name.ToLower()]
+
+				# Remove Invalid Items
+				if($foundItem -and ($foundItem.IsInvalid()) -and -not $includeInvalidItems){
+					$foundItem = $null
+				}
+				
+				# Remove Hidden Items
+				if($foundItem -and ($foundItem.IsHidden()) -and -not $includeHiddenItems){
+					$foundItem = $null
+				}
+			}
+
 			if(-not $foundItem) {
 				$foundItem = $this._items[$name.ToLower()]
 				
@@ -1701,6 +1785,11 @@ class HasCollectionContext: HasConsumableContext{
 			if($foundItem){
 				$foundItem.RefreshSessionIfNeeded()
 			}
+			
+			if($foundItem){
+				$this._shallowItems[$name.ToLower()] = $foundItem
+			}
+
 			return $foundItem
 		}
 		if($this._lock){
@@ -1936,7 +2025,9 @@ class UIInputScopeBase : HasCollectionContext{
 	hidden [UIActionTypeDefinitionCollection]            $_actionTypes
 	
 	hidden [UIParameterCollection]                       $_parameters
-    hidden [UIParameterTypeDefinitionCollection]         $_parameterTypes
+	hidden [UIParameterTypeDefinitionCollection]         $_parameterTypes
+	hidden [UILoggingTypeDefinitionCollection]           $_loggingTypes
+	hidden [UILoggerCollection]                          $_loggers
 	
     # hidden [UIInputCollection]                           $_inputs
     hidden [UIInputScopecollection]                      $_inputScopes
@@ -1960,6 +2051,8 @@ class UIInputScopeBase : HasCollectionContext{
 		Write-Color "{red}Error, {gray}Empty Constructor {white}{gray}of type {white}$($this.GetType().Name){red} came in with null scope{gray}"
 		
 		$this._parameterTypes             = [UIParameterTypeDefinitionCollection]::new($this.Context())
+		$this._loggingTypes               = [UILoggingTypeDefinitionCollection]::new($this.Context())
+		$this._loggers                    = [UILoggerCollection]::new($this.Context())
         # $this._inputs                     = [UIInputCollection]::new($this.Context())
         $this._inputScopes                = [UIInputScopecollection]::new($this.Context())
 		$this._parameters                 = [UIParameterCollection]::new($this.Context())
@@ -1983,6 +2076,8 @@ class UIInputScopeBase : HasCollectionContext{
 		$wasAbleToAdd = $true
 		$wasAbleToAdd =  $this.Add($this._importTemplates) -and $wasAbleToAdd
 		$wasAbleToAdd =  $this.Add($this._parameterTypes) -and $wasAbleToAdd
+		$wasAbleToAdd =  $this.Add($this._loggingTypes) -and $wasAbleToAdd
+		$wasAbleToAdd =  $this.Add($this._loggers) -and $wasAbleToAdd
 		$wasAbleToAdd =  $this.Add($this._inputScopes) -and $wasAbleToAdd
 		$wasAbleToAdd =  $this.Add($this._parameters) -and $wasAbleToAdd
 		$wasAbleToAdd =  $this.Add($this._resourceTypes) -and $wasAbleToAdd
@@ -2012,7 +2107,9 @@ class UIInputScopeBase : HasCollectionContext{
 		}
 		$this._parentScope = $parentScope
 
-        $this._parameterTypes             = [UIParameterTypeDefinitionCollection]::new($this.Context(), $this)
+		$this._parameterTypes             = [UIParameterTypeDefinitionCollection]::new($this.Context(), $this)
+		$this._loggingTypes               = [UILoggingTypeDefinitionCollection]::new($this.Context(), $this)
+		$this._loggers                    = [UILoggerCollection]::new($this.Context(), $this)
         # $this._inputs                     = [UIInputCollection]::new($this.Context(), $this)
         $this._inputScopes                = [UIInputScopecollection]::new($this.Context(), $this)
 		$this._parameters                 = [UIParameterCollection]::new($this.Context(), $this)
@@ -2036,6 +2133,8 @@ class UIInputScopeBase : HasCollectionContext{
 		$wasAbleToAdd = $true
 		$wasAbleToAdd =  $this.Add($this._importTemplates) -and $wasAbleToAdd
 		$wasAbleToAdd =  $this.Add($this._parameterTypes) -and $wasAbleToAdd
+		$wasAbleToAdd =  $this.Add($this._loggingTypes) -and $wasAbleToAdd
+		$wasAbleToAdd =  $this.Add($this._loggers) -and $wasAbleToAdd
 		$wasAbleToAdd =  $this.Add($this._inputScopes) -and $wasAbleToAdd
 		$wasAbleToAdd =  $this.Add($this._parameters) -and $wasAbleToAdd
 		$wasAbleToAdd =  $this.Add($this._resourceTypes) -and $wasAbleToAdd
@@ -2058,6 +2157,15 @@ class UIInputScopeBase : HasCollectionContext{
 			$this.Error("Unable to add some of the items")
 		}
 		
+	}
+	[void] Milestone([string] $message, [string] $type){
+		$this.Loggers().Milestone($message, $type)
+    }
+	[void] Log([string] $message){
+		$this.Loggers().Log($message)
+    }
+    [void] Indent([int] $amount){
+		$this.Loggers().Indent($amount)
     }
 	[UIInputScopeBase] CurrentScope(){
         return $this._currentScope
@@ -2240,7 +2348,10 @@ class UIInputScopeBase : HasCollectionContext{
     }
     # [UIInputCollection] Inputs(){
     #     return $this._inputs
-    # }
+	# }
+	[UILoggingTypeDefinitionCollection] LoggingTypes(){
+        return $this._loggingTypes
+    }
 	[UIConfigMasterExtensionTypeCollection] ExtensionTypes(){
         return $this._configMasterExtensionTypes
     }
@@ -2264,6 +2375,9 @@ class UIInputScopeBase : HasCollectionContext{
     }
 	[UIActionCollection] Actions(){
         return $this._actions
+	}
+	[UILoggerCollection] Loggers(){
+        return $this._loggers
     }
 	[UIPreActionCollection] PreActions(){
         return $this._preActions
@@ -3647,7 +3761,7 @@ class UIInputTypeReferenceCollection : HasContext {
 }
 class UIInputTypeReference : HasContext{
 
-    
+    [UIInputTypeDefinition] $_definition
 	UIInputTypeReference([ConfigAutomationContext] $_context) : base($_context) {
     }
     UIInputTypeReference([ConfigAutomationContext] $_context, [String] $name, [UIInputScopeBase] $scope) : base($_context, $scope, $name) {
@@ -3656,7 +3770,11 @@ class UIInputTypeReference : HasContext{
     [UIInputTypeDefinition] Definition(){
         $this.Context().Log("InputTypes", "Referencing UI Input Type '$($this.Name())'")
 		
-        return $this.Context().InputTypes().Get($this.Name())
+		if($this._definition){
+			return $this._definition
+		}
+		$this._definition = $this.Context().InputTypes().Get($this.Name())
+        return $this._definition
     }
 	[String] ToString(){
 		return $this.Name()
@@ -4016,7 +4134,7 @@ class UIAction : UIInputScope{
 			$activeCollectionProperties = $($activeCollection.Properties)
 		}
 		
-		
+		$this.Context().StartLoggingContext("$($this.Name())")
 		$this.Context().PushActionLevel()
 		
 		if($activeCollectionProperties["ScopeType"] -ieq "Parent"){
@@ -4034,13 +4152,17 @@ class UIAction : UIInputScope{
 		}
 		
 		$this.LoadChildren()
-		
+
+		$this.Context().StartLoggingContext("can-perform")
 		$canRun = $this.CanPerform(([ref]$shortMessage))
-		
+		$this.Context().EndLoggingContext()
+
 		# Check for Conditions for running...
 		if($canRun){
+			$this.Context().StartLoggingContext("pre-actions")
 			$isValid = $this.Get("PreActions").Perform($scriptAction, $actionName, $isRootLevel) -and $isValid
 			$this.LoadChildren()
+			$this.Context().EndLoggingContext()
 		}
 		# $this.Context().DisableLog()
 		
@@ -4072,14 +4194,20 @@ class UIAction : UIInputScope{
 		
 		if($canRun)
 		{
+			$this.Context().StartLoggingContext("post-actions")
 			$isValid = $this.Get("PostActions").Perform($scriptAction, $actionName, $isRootLevel) -and $isValid
+			$this.Context().EndLoggingContext()
+
 			$this._actionsAlreadyPerformed[$actionName] = $isValid
 			$this._localVariables.Remove("PerformingAction")
+			$this.Context().EndLoggingContext()
 			return $isValid
 		}
 		
 		$this._actionsAlreadyPerformed[$actionName] = $isValid
 		$this._localVariables.Remove("PerformingAction")
+		$this.Context().EndLoggingContext()
+
 		return $isValid
 	}
     [UIActionTypeReference] ActionType(){
@@ -4483,15 +4611,7 @@ class UIInputStrategyCollection : HasCollectionContext{
 		$sortedStrategies = $this.Items()
 		foreach($strategy in $sortedStrategies){
 			$value = $strategy.ExecuteStrategy()
-			if($value)
-			{
-				if($parameter._properties["PlainText"] -ieq "true"){
-					$value = $this.ParameterizeStringAsPlainText($value)
-				}
-				else{
-					$value = $this.ParameterizeString($value)
-				}
-			}
+			
 
 			if($value){
 				return $value
@@ -4852,13 +4972,14 @@ class UIParameterCollection : HasCollectionContext {
 	}
 	[bool] ValidateRequiredParameters(){
 		
-		
+		$passed = $true
 		foreach($parameter in $this.CurrentScope().Parameters().Items()){
 			if($parameter.IsRequired() -and $parameter.IsMissing()){
-				return $false
+				$this.Error("Parameters", "Exepcted parameter {white}'$($parameter.Name())'{gray} to exists but was missing in scope {white}$($this.CurrentScope().FullName()){gray}")
+				$passed= $false
 			}
 		}	
-		return $true
+		return $passed
 
 	}
 	[bool] Validate([array] $expectedParameters){
@@ -5704,6 +5825,215 @@ class UIParameterTypeDefinition: UITypeDefinition {
 		return $this.ParameterTypeName()
 	}
 }
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - -UILoggingTypeDefinitionCollection Collection - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+class UILoggingTypeDefinitionCollection: HasCollectionContext {
+
+	UILoggingTypeDefinitionCollection([ConfigAutomationContext] $context) : base($context, "Logging Types"){
+    }
+    UILoggingTypeDefinitionCollection([ConfigAutomationContext] $context, [UIInputScopeBase] $scope) : base($context, $scope,"Logging Types"){
+    }
+    [void] PopulateFromXML([System.Xml.XmlElement] $xml){
+        foreach($roots in $xml.ChildNodes) 
+        {
+            if($roots.LocalName -eq "LoggingTypes") 
+            {
+                foreach($step in $roots.ChildNodes)
+                {
+                    if($step.LocalName -eq "LoggingType") {
+                        if(-not ($this.Add([UILoggingTypeDefinition]::FromXML($this.Context(), $step, $this.CurrentScope())))){
+							$this.Error("Failed to add logging type from xml snippet:`r`n$($step.Outerxml)")
+						}
+                    }
+                }
+            }
+        }
+        
+    }
+}
+
+class UILoggingTypeDefinition: UITypeDefinition {
+	hidden [UIParameterCollection] $_parameters
+	
+	UILoggingTypeDefinition([ConfigAutomationContext] $_context) : base($_context){
+		$this._parameters     = [UIParameterCollection]::new($_context, $_context.CurrentScope())
+    }
+    UILoggingTypeDefinition([ConfigAutomationContext] $_context, [String] $name, [string] $contentType, [String] $content, [UIInputScopeBase] $scope) : base($_context, $name, $contentType, $content, "Logging Type", $scope){
+		$this._parameters     = [UIParameterCollection]::new($_context, $_context.CurrentScope())
+	}
+	[UIParameterCollection] Parameters(){
+		return $this._parameters
+	}
+	[void] Init([UILogger] $logger){
+		$this.InvokeCallback("Init", @($($this.Context()), $logger), $false)
+    }
+	[void] Milestone([string] $message, [string] $type, [UILogger] $logger){
+		$this.InvokeCallback("Milestone", @($($this.Context()), $logger, $message, $type), $false)
+    }
+	[void] Log([string] $message, [UILogger] $logger){
+		$this.InvokeCallback("Log", @($($this.Context()), $logger, $message), $false)
+    }
+    [void] Indent([int] $amount, [UILogger] $logger){
+		$this.InvokeCallback("Indent", @($($this.Context()), $logger, $amount), $false)
+    }
+    [string] LoggingTypeName(){
+        return $this.Name()
+    }
+    static [UILoggingTypeDefinition] FromXML([ConfigAutomationContext] $_context, [System.Xml.XmlElement] $element, [UIInputScopeBase] $scope){
+        return [UITypeDefinition]::FromXml($_context, $element, [UILoggingTypeDefinition], $scope)
+    }
+	[String] ToString(){
+		return $this.LoggingTypeName()
+	}
+}
+class UILoggingTypeReference : HasContext {
+
+    hidden [String] $_typeName
+    UILoggingTypeReference([ConfigAutomationContext] $_context) : base($_context) {
+    }
+    UILoggingTypeReference([ConfigAutomationContext] $_context, [String] $name) : base($_context) {
+        $this._typeName = $name
+    }
+	UILoggingTypeReference([ConfigAutomationContext] $_context, [UIInputScopeBase] $scope, [String] $name) : base($_context,$scope, "NOT_SET") {
+        $this._typeName = $name
+    }
+    [string] LoggingTypeName(){
+        return $this._typeName
+    }
+
+    [UILoggingTypeDefinition] Definition(){
+        # Write-Host "Referencing UI Extension Type '$($this.ExtensionTypeName())'"
+		
+        return $this.Context().LoggingTypes().Get($this.LoggingTypeName())
+    }
+	[String] ToString(){
+		return $this.LoggingTypeName()
+	}
+}
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - -UILoggerCollection Collection - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+class UILoggerCollection : HasCollectionContext {
+	hidden [bool] $_skipLogger = $false
+	UILoggerCollection([ConfigAutomationContext] $context) :base($context, "Loggers"){
+    }
+    UILoggerCollection([ConfigAutomationContext] $context, [UIInputScopeBase] $scope) :base($context, $scope, "Loggers"){
+    }
+    [void] Milestone([string] $message, [string] $type){
+		if($this._skipLogger){
+			return
+		}
+		$this._skipLogger = $true
+		foreach($logger in $this.Items()){
+			$logger.Milestone($message, $type)
+		}
+		if($this.CurrentScope().Loggers().Id() -ne $this.Id()){
+			$this.CurrentScope().Loggers().Milestone($message, $type)
+		}
+		if($this.CurrentScope().ParentScope()){
+			$this.CurrentScope().ParentScope().Milestone($message, $type)
+		}
+		$this._skipLogger = $false
+    }
+	[void] Log([string] $message){
+		if($this._skipLogger){
+			return
+		}
+		$this._skipLogger = $true
+		foreach($logger in $this.Items()){
+			$logger.Log($message)
+		}
+		if($this.CurrentScope().Loggers().Id() -ne $this.Id()){
+			$this.CurrentScope().Loggers().Log($message)
+		}
+		if($this.CurrentScope().ParentScope()){
+			$this.CurrentScope().ParentScope().Log($message)
+		}
+		
+		$this._skipLogger = $false
+    }
+    [void] Indent([int] $amount){
+		if($this._skipLogger){
+			return
+		}
+		$this._skipLogger = $true
+		foreach($logger in $this.Items()){
+			$logger.Indent($amount)
+		}
+		if($this.CurrentScope().Loggers().Id() -ne $this.Id()){
+			$this.CurrentScope().Loggers().Indent($amount)
+		}
+		if($this.CurrentScope().ParentScope()){
+			$this.CurrentScope().ParentScope().Indent($amount)
+		}
+		$this._skipLogger = $false
+    }
+	static [object] Requirements(){
+		return [PSCustomObject]@{
+			ParentElementNames =@("Loggers");
+			ChildElementNames = @("Logger");
+			ChildType = [UILogger]
+		}
+	}
+	
+}
+class UILogger : HasContext{
+
+	hidden [UILoggingTypeReference] $_type
+	
+	UILogger([ConfigAutomationContext] $_context) : base($_context){
+    }
+    UILogger([ConfigAutomationContext] $_context, [UIInputScopeBase] $parent, [String] $name) : base($_context, $parent, $name){
+    }
+
+    [UILoggingTypeReference] LoggingType(){
+        return $this._type
+    }
+	[String] ToString() {
+		return "$($this.Name()) $($this.LoggingType().ToString())"
+	}
+	[void] Milestone([string] $message, [string] $type){
+		
+		$this.LoggingType().Definition().Milestone($message, $type, $this)
+    }
+	[void] Log([string] $message){
+		
+		$this.LoggingType().Definition().Log($message, $this)
+    }
+    [void] Indent([int] $amount){
+		$this.LoggingType().Definition().Indent($amount, $this)
+    }
+	[bool] UpdateProps([hashtable] $props, [string] $body, [System.Xml.XmlElement] $element, [string] $location){
+		if(-not (([HasContext]$this).UpdateProps($props, $body, $element, $location))){
+			return $false
+		}
+		
+		return $true
+	}
+	[bool] InitialProps([hashtable] $props, [string] $body, [System.Xml.XmlElement] $element, [string] $location){
+		if(-not (([HasContext]$this).InitialProps($props, $body, $element, $location))){
+			return $false
+		}
+		
+		if(-not ($element.GetAttribute("Type"))){
+            $this.Error("Not all the attributes to build the parameter element were found:`r`n  Name:$($element.GetAttribute("Name"))`r`n  Type:$($element.GetAttribute("Type")) `r`n   XPath:$($element.GetAttribute("XPath"))")
+			return $false
+        }
+
+		$this._type  =  [UILoggingTypeReference]::new($this.Context(), $this.CurrentScope(), $element.GetAttribute("Type"))
+		$this.LoggingType().Definition().Init($this)
+		return $true
+	}
+	
+	static [object] Requirements(){
+		return [PSCustomObject]@{
+			ElementNames = @("Logger");
+			PrimaryKey = "Name"
+		}
+	}
+}
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # - - - - - - - - - - - - -UIResources Collection - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -6226,6 +6556,11 @@ class ConfigAutomationContext{
 	[hashtable]                $_refs
 	[bool]                     $_fullParsing = $false
 	[bool]                     $_saveXmlEnabled = $true
+
+	[System.Collections.Stack] $_currentLoggingContextStack
+	[object]       			   $_currentLoggingContext
+	[object]       			   $_rootLoggingContext
+	
 	[System.Collections.ArrayList] $_errors
 	[System.Collections.ArrayList] $_filesVisited 	
 	[System.Collections.ArrayList] $_azureRmResources
@@ -6263,6 +6598,9 @@ class ConfigAutomationContext{
 		$this._refs                       = new-object hashtable
 		$this._parameterizingEnabledStack = New-Object System.Collections.Stack
 		$this._azureRmResources           = new-object System.Collections.ArrayList
+		$this._currentLoggingContext      = [PSCustomObject]@{id = 'init'; Children = $(new-object System.Collections.ArrayList)}
+		$this._currentLoggingContextStack = New-Object System.Collections.Stack
+		$this._rootLoggingContext         = $this._currentLoggingContext
 		$this.StartSession()
 
     }
@@ -6302,6 +6640,23 @@ class ConfigAutomationContext{
 		}
 		# $this.Display("Checking Exit Request - $($measure.TotalMilliseconds)")
 		return $this._exitRequested
+	}
+	[object] CurrentLoggingContext(){
+		return $this._currentLoggingContext
+	}
+	[void] StartLoggingContext([string] $id){
+		$this.PushLoggingContext([PSCustomObject]@{id = $id; Children = $(new-object System.Collections.ArrayList)})
+	}
+	[void] EndLoggingContext(){
+		$this.PopLoggingContext()
+	}
+	[void] PushLoggingContext([object] $context){
+		$this.CurrentLoggingContext().Children.Add([PSCustomObject]@{Type = 'Child'; Value = $context})
+		$this._currentLoggingContextStack.Push($this._currentLoggingContext)
+		$this._currentLoggingContext = $context
+	}
+	[void] PopLoggingContext(){
+		$this._currentLoggingContext = $this._currentLoggingContextStack.Pop()
 	}
 	[void] ExitRequested([string] $exitRequested){
 		 $this._exitRequested = $exitRequested
@@ -6580,6 +6935,7 @@ class ConfigAutomationContext{
 		try{
 		# if($this.arguments["LogGroups"] -eq $grouping -or $this.arguments["LogGroups"] -eq "All"){
 			[HasContext]::Prefix += "  "
+			# $this.rootScope.Indent(1)
 		# }
 		}
 		catch{
@@ -6592,6 +6948,7 @@ class ConfigAutomationContext{
 		try{
 			# if($this.arguments["LogGroups"] -eq $grouping -or $this.arguments["LogGroups"] -eq "All"){
 				[HasContext]::Prefix = [HasContext]::Prefix.Substring(2)
+				# $this.rootScope.Indent(-1)
 			# }
 		}
 		catch{
@@ -6644,7 +7001,9 @@ class ConfigAutomationContext{
 				$this._logLock = $false
 				return;
 			}
-			Write-Color $backup
+			$this.rootScope.Log($backup)
+			$this.CurrentLoggingContext().Children.Add([PSCustomObject]@{Type = 'Log'; Value = $backup})
+			# Write-Color $backup
 		}	
 		$this._logLock = $false
 	}
@@ -6792,6 +7151,9 @@ class ConfigAutomationContext{
 	[UIInputScopeBase] PreviousScope(){
 		return $this.rootScopes.Peek()
 	}
+	[UILoggingTypeDefinitionCollection] LoggingTypes(){
+        return $this.rootScope.LoggingTypes()
+    }
 	[UIConfigMasterExtensionTypeCollection] ExtensionTypes(){
         return $this.rootScope.ExtensionTypes()
     }
@@ -6834,33 +7196,41 @@ class ConfigAutomationContext{
 		if($actialAction.ParentScope()){
 			$parentText = "{gray}{white}" + $actialAction.ParentScope().FullName("{gray} > {white}") + "{gray}"
 		}
+		$this.Context().StartLoggingContext("Start")
 		$this.Display("$($parentText) > {white}{magenta}$($actialAction.Name()){white}{gray}")
 		
 		$success = $true
 		if(-not $actialAction.TestProperty("SkipValidate", "true", $true))
 		{
+			$this.Context().StartLoggingContext("Validate")
 			$this.Title("`r`n Validating `r`n")
 			[HasContext]::Prefix += "  "
 			$success = $actialAction.Validate()
 			[HasContext]::Prefix = [HasContext]::Prefix.Substring(2)
+			$this.Context().EndLoggingContext()
 		}
 		
 		if(-not $actialAction.TestProperty("SkipClean", "true", $true) -and -not $actialAction.TestProperty("SkipValidate", "true", $true))
 		{
+			$this.Context().StartLoggingContext("Cleaning")
 			$this.Title("`r`n Cleaning `r`n")
 			[HasContext]::Prefix += "  "
 			$success = $actialAction.Clean()
 			[HasContext]::Prefix = [HasContext]::Prefix.Substring(2)
+			$this.Context().EndLoggingContext()
 		}
 		
 		if($success -and -not $actialAction.TestProperty("SkipExecute", "true", $true))
 		{
+			$this.Context().StartLoggingContext("Executing")
 			$this.Title("`r`n Executing `r`n")
 			[HasContext]::Prefix += "  "
 			$success = $actialAction.ExecuteAction()
 			[HasContext]::Prefix = [HasContext]::Prefix.Substring(2)
+			$this.Context().EndLoggingContext()
 		}
-		
+		$this.Context().EndLoggingContext()
+
 		if(-not $success){
 			$actialAction.PrintParameterBreakdown()
 			$this.Display("`r`n{red}:: {red}F a i l e d {red}::{gray}`r`n")
@@ -6869,7 +7239,32 @@ class ConfigAutomationContext{
 			$actialAction.PrintParameterBreakdown()
 			$this.Display("`r`n{green}:: {green}S u c c e s s {green}::{gray}`r`n")
 		}
-		
+	}
+	[void] WriteHtmlLog([string] $filePath){
+		$root = $this._rootLoggingContext
+		$html = $this.OutputAsHtml($root)
+		[System.IO.File]::WriteAllText($filePath, $html)
+	}
+	[string] OutputAsHtml([object] $context){
+		if($context.Children.Count -eq 0){
+			return ""
+		}
+
+		$html = ""
+		$html += "<div class='item'>`r`n"
+		$html += "  <div class='title'>$($context.id)</div>`r`n"
+		$html += "  <div class='children'>`r`n"
+		foreach($child in $context.Children){
+			if($child.Type -eq "Log"){
+				$html += Expand-AsHtml $($child.Value)
+			}
+			elseif($child.Type -eq "Child"){
+				$html += $this.OutputAsHtml($($child.Value))
+			}
+		}
+		$html += "  </div>`r`n"
+		$html += "</div>`r`n"
+		return $html
 	}
 	[array] ResolveAction([string[]] $txtActions, [bool] $expected){
 		if($this.arguments["Execution:LogGroups"]){
@@ -7094,7 +7489,7 @@ class ConfigAutomationContext{
 		}
 
 		$header = $header.Groups[1].Value
-		$matches = [regex]::Matches($header, '(\w+)\=([^;]+)')
+		$matches = [regex]::Matches($header, '#([^\=]+)\=([^;]+)')
 		$heading = [hashtable]::new()
 		foreach($match in $matches){
 			$name = $match.Groups[1].Value
@@ -7138,7 +7533,10 @@ class ConfigAutomationContext{
 		elseif($heading.Type -eq "ExtensionType"){
 			$type = [UIConfigMasterExtensionType]::new($this.Context(), $name, "ScriptFile", $file, $this.CurrentScope())
 			$collection = $this.CurrentScope().ExtensionTypes()
-
+		}
+		elseif($heading.Type -eq "LoggingType"){
+			$type = [UILoggingTypeDefinition]::new($this.Context(), $name, "ScriptFile", $file, $this.CurrentScope())
+			$collection = $this.CurrentScope().LoggingTypes()
 		}
 		else{
 			$this.Error("Unknown heading type '{white}$($heading.Type){gray} found in XScript '{white}$file{gray}'. `r`n"+ `
@@ -7160,6 +7558,7 @@ class ConfigAutomationContext{
 	}
 	
     [void] PopulateFromXScriptsInFolder([String] $folder, [int] $maxDepth){
+		$this.Context().StartLoggingContext("Load Xscript(s)")
 		$xscriptFiles = Get-ChildItem -Path $folder -Filter "*.xscript.ps1" -Recurse -Depth 5 | Where {[System.IO.File]::Exists($_.FullName)} | Foreach {$_.FullName}
 		$this.Title("XScripts Files")
 		$this._logLock = $true
@@ -7171,11 +7570,12 @@ class ConfigAutomationContext{
 			# Write-Color "";
 		}
 		$this._logLock = $false
+		$this.Context().EndLoggingContext()
 		
 	}
     [void] PopulateFromFolder([String] $folder, [int] $maxDepth){
 		
-		
+		$this.Context().StartLoggingContext("Load XConfigMaster Files")
 		$files = Get-ChildItem -Path $folder -Filter "*.xconfigmaster" -Recurse -Depth $maxDepth | Where {[System.IO.File]::Exists($_.FullName)} | Foreach {$_.FullName}
 		$xmls  = $files | Foreach {@{Xml = ([XML](Get-Content $_ -Raw)); File = $_; Used = "Yes"}}
 		
@@ -7247,7 +7647,7 @@ class ConfigAutomationContext{
 			Write-Color "";
 		}
 
-
+		$this.Context().EndLoggingContext()
 		
 
     }
@@ -7489,6 +7889,10 @@ Function Start-XConfigMaster{
 			}
 		}
 
+		$parseFolder = [System.IO.Path]::Combine($rootpath, ".\")
+		$toolingFolder = [System.IO.Path]::Combine($PSScriptRoot,"..\")
+		$htmlOutputFile = [System.IO.Path]::Combine($rootpath, ".\xlog.html")
+
 		#######################################################################
 		#######################################################################
 		#######################################################################
@@ -7496,10 +7900,10 @@ Function Start-XConfigMaster{
 			$Global:automationContext = New-ConfigAutomationContext
 			$Global:automationContext.PopulateFromArguments($parameters)
 			
-			$parseFolder = [System.IO.Path]::Combine($rootpath, ".\")
+			
 			# Read in Settings
 			Write-Host "Reading in Settings..." 
-			$toolingFolder = [System.IO.Path]::Combine($PSScriptRoot,"..\")
+			
 			
 			$Global:automationContext.PopulateFromXScriptsInFolder($toolingFolder, 12)
 			$Global:automationContext.PopulateFromXScriptsInFolder($parseFolder, 12)
@@ -7519,7 +7923,7 @@ Function Start-XConfigMaster{
 			Write-Host "Parsing Passed!`r`n" -ForegroundColor Green
 			
 			$Global:automationContext.ExecuteActionsFromArguments($actions)
-			
+			$Global:automationContext.WriteHtmlLog($htmlOutputFile)
 			if($Global:automationContext.IsValid()){
 				Write-Host "Execution Passed!`r`n" -ForegroundColor Green
 			}
@@ -7528,6 +7932,7 @@ Function Start-XConfigMaster{
 			}
 		}
 		else {
+			$Global:automationContext.WriteHtmlLog($htmlOutputFile)
 			throw "Parsing Failed`r`n"
 		}
 	}

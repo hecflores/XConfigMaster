@@ -15,12 +15,18 @@ jobs:
     parameters:
       prePublishSteps: 
         - powershell: |
-            $stableVersion = (Find-Module XConfigMaster -AllowPrerelease:$false).Version
-            $revision = $stableVersion -replace "(\d+.\d+.)(\d+)(.\d+)",'$2'
-            $revision = [Int]::Parse($revision)
-            $base = $stableVersion -replace "(\d+.\d+.)(\d+)(.\d+)",'$1'
-            $revision += 1
-            $newVersion = $base + $revision + ".0"
+            $stableVersion = (Find-Module XConfigMaster -AllowPrerelease:$false -MinimumVersion $(XConfigMaster.Major).$(XConfigMaster.Minor).0 -ErrorAction Ignore).Version
+            if($stableVersion){
+              $revision = $stableVersion -replace "(\d+.\d+.)(\d+)(.\d+)",'$2'
+              $revision = [Int]::Parse($revision)
+              $base = $stableVersion -replace "(\d+.\d+.)(\d+)(.\d+)",'$1'
+              $revision += 1
+              $newVersion = $base + $revision + ".0"
+            }
+            else{
+              $newVersion = "$(XConfigMaster.Major).$(XConfigMaster.Minor).0.0"
+            }
+            
             Update-ModuleManifest -Path "$(ModulePath)/XConfigMaster.psd1" -ModuleVersion $newVersion
             Write-Output "##vso[build.updatebuildnumber]$newVersion"
           workingDirectory: $(ModulePath)
